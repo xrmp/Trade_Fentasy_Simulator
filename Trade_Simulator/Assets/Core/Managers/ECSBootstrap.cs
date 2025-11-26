@@ -1,16 +1,25 @@
-using UnityEngine;
+﻿using UnityEngine;
+using Unity.Entities;
 
 public class ECSBootstrap : MonoBehaviour
 {
-    // Start is called once before the first execution of Update after the MonoBehaviour is created
-    void Start()
-    {
-        
-    }
+    public static ECSBootstrap Instance;
 
-    // Update is called once per frame
-    void Update()
+    void Awake()
     {
-        
+        if (Instance != null)
+        {
+            Destroy(gameObject);
+            return;
+        }
+
+        Instance = this;
+        DontDestroyOnLoad(gameObject);
+
+        if (!World.DefaultGameObjectInjectionWorld.IsCreated)
+        {
+            DefaultWorldInitialization.Initialize("Default World");
+            Debug.Log("✅ ECS World инициализирован");
+        }
     }
 }

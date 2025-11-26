@@ -1,16 +1,47 @@
-using UnityEngine;
+using Unity.Entities;
+using Unity.Mathematics;
 
-public class CombatComponents : MonoBehaviour
+public struct CombatStats : IComponentData
 {
-    // Start is called once before the first execution of Update after the MonoBehaviour is created
-    void Start()
-    {
-        
-    }
+    public int AttackPower;
+    public int DefensePower;
+    public float AttackSpeed;
+    public int Health;
+    public int MaxHealth;
+}
 
-    // Update is called once per frame
-    void Update()
-    {
-        
-    }
+public struct GuardData : IComponentData
+{
+    public Entity Owner;
+    public GuardType Type;
+    public int Level;
+    public int Experience;
+    public int Salary;
+    public float Morale;
+    public bool IsInCombat;
+}
+
+public struct BanditEncounter : IComponentData
+{
+    public int BanditCount;
+    public int BanditPower;
+    public float SurpriseFactor;
+    public bool Resolved;
+}
+
+public struct CombatResult : IComponentData
+{
+    public bool Victory;
+    public int PlayerLosses;
+    public int BanditLosses;
+    public int GoldLost;
+    public int FoodLost;
+    public float MoraleChange;
+}
+
+public enum GuardType
+{
+    Militia,
+    Mercenary,
+    EliteGuard
 }

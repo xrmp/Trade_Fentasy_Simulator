@@ -1,16 +1,26 @@
 using UnityEngine;
+using TMPro;
+using Unity.Entities;
 
 public class ConvoyUIManager : MonoBehaviour
 {
-    // Start is called once before the first execution of Update after the MonoBehaviour is created
-    void Start()
-    {
-        
-    }
-
-    // Update is called once per frame
+    public TMP_Text goldText;
+    public TMP_Text foodText;
+    public TMP_Text guardsText;
+    
     void Update()
     {
+        if (!World.DefaultGameObjectInjectionWorld.IsCreated) return;
         
+        var entityManager = World.DefaultGameObjectInjectionWorld.EntityManager;
+        var playerQuery = entityManager.CreateEntityQuery(typeof(PlayerTag), typeof(ConvoyResources));
+        
+        if (!playerQuery.IsEmpty)
+        {
+            var resources = playerQuery.GetSingleton<ConvoyResources>();
+            goldText.text = $"Gold: {resources.Gold}";
+            foodText.text = $"Food: {resources.Food}";
+            guardsText.text = $"Guards: {resources.Guards}";
+        }
     }
 }
