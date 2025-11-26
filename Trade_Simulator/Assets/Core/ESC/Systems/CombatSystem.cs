@@ -2,6 +2,7 @@
 using Unity.Mathematics;
 using Unity.Collections;
 using Random = Unity.Mathematics.Random;
+using UnityEngine;
 
 [UpdateInGroup(typeof(SimulationSystemGroup))]
 public partial struct CombatSystem : ISystem
