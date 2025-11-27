@@ -3,217 +3,412 @@ using UnityEngine.UI;
 using TMPro;
 using Unity.Entities;
 using Unity.Mathematics;
+using System.Collections.Generic;
 
-public class RoutePlannerUIManager : MonoBehaviour
+namespace UI.Managers
 {
-    [Header("Панель планировщика")]
-    public GameObject routePanel;
-    public TMP_InputField destinationX;
-    public TMP_InputField destinationY;
-    public TMP_Text routeInfoText;
-    public TMP_Text riskAssessmentText;
-    public TMP_Text foodRequiredText;
-    public TMP_Text timeRequiredText;
 
-    [Header("Кнопки")]
-    public Button planRouteButton;
-    public Button startTravelButton;
-    public Button cancelButton;
-
-    [Header("Предупреждения")]
-    public GameObject insufficientFoodWarning;
-    public GameObject highRiskWarning;
-
-    private Entity _routePlanEntity = Entity.Null;
-
-    void Start()
+    public class RoutePlannerUIManager : MonoBehaviour
     {
-        planRouteButton.onClick.AddListener(PlanRoute);
-        startTravelButton.onClick.AddListener(StartTravel);
-        cancelButton.onClick.AddListener(CancelRoute);
+        [Header("Основная панель")]
+        [SerializeField] private GameObject routePlannerPanel;
+        [SerializeField] private Button openPlannerButton;
+        [SerializeField] private Button closePlannerButton;
+        [SerializeField] private Button confirmRouteButton;
+        [SerializeField] private Button cancelRouteButton;
 
-        routePanel.SetActive(false);
-    }
+        [Header("Информация о маршруте")]
+        [SerializeField] private TextMeshProUGUI startPointText;
+        [SerializeField] private TextMeshProUGUI endPointText;
+        [SerializeField] private TextMeshProUGUI distanceText;
+        [SerializeField] private TextMeshProUGUI timeText;
+        [SerializeField] private TextMeshProUGUI foodRequiredText;
+        [SerializeField] private TextMeshProUGUI riskLevelText;
+        [SerializeField] private Slider riskSlider;
 
-    void Update()
-    {
-        if (routePanel.activeInHierarchy)
+        [Header("Выбор точек")]
+        [SerializeField] private TMP_Dropdown citiesDropdown;
+        [SerializeField] private Button setStartPointButton;
+        [SerializeField] private Button setEndPointButton;
+        [SerializeField] private Button clearRouteButton;
+
+        [Header("Предупреждения")]
+        [SerializeField] private GameObject warningsPanel;
+        [SerializeField] private TextMeshProUGUI warningsText;
+
+        private EntityManager _entityManager;
+        private World _ecsWorld;
+        private RoutePlan _currentRoutePlan;
+        private float3 _startPosition;
+        private float3 _endPosition;
+        private bool _isPlanningMode = false;
+
+        private void Awake()
         {
-            UpdateRouteWarnings();
-        }
-    }
+            Debug.Log("🗺️ RoutePlannerUIManager: Инициализация...");
 
-    public void OpenRoutePlanner()
-    {
-        routePanel.SetActive(true);
-        ClearRouteInfo();
-    }
-
-    private void PlanRoute()
-    {
-        if (!int.TryParse(destinationX.text, out int x) || !int.TryParse(destinationY.text, out int y))
-        {
-            routeInfoText.text = "❌ Ошибка: введите корректные координаты";
-            return;
-        }
-
-        if (!World.DefaultGameObjectInjectionWorld.IsCreated) return;
-
-        var entityManager = World.DefaultGameObjectInjectionWorld.EntityManager;
-
-        // Удаляем старый план маршрута
-        if (_routePlanEntity != Entity.Null && entityManager.Exists(_routePlanEntity))
-        {
-            entityManager.DestroyEntity(_routePlanEntity);
-        }
-
-        // Создаем новый план маршрута
-        _routePlanEntity = entityManager.CreateEntity();
-
-        var startPos = GetPlayerPosition();
-        var endPos = new float3(x * 10f, 0, y * 10f);
-
-        entityManager.AddComponentData(_routePlanEntity, new RoutePlan
-        {
-            StartPosition = startPos,
-            EndPosition = endPos,
-            IsValid = false
-        });
-
-        routeInfoText.text = "📐 Расчет маршрута...";
-    }
-
-    private void StartTravel()
-    {
-        if (!World.DefaultGameObjectInjectionWorld.IsCreated) return;
-
-        var entityManager = World.DefaultGameObjectInjectionWorld.EntityManager;
-
-        if (_routePlanEntity == Entity.Null || !entityManager.Exists(_routePlanEntity))
-        {
-            routeInfoText.text = "❌ Сначала рассчитайте маршрут";
-            return;
-        }
-
-        var routePlan = entityManager.GetComponentData<RoutePlan>(_routePlanEntity);
-
-        if (!routePlan.IsValid)
-        {
-            routeInfoText.text = "❌ Маршрут еще не рассчитан";
-            return;
-        }
-
-        // Проверяем достаточно ли пищи
-        var playerFood = GetPlayerFood();
-        if (playerFood < routePlan.FoodRequired)
-        {
-            routeInfoText.text = "❌ Недостаточно провианта для путешествия";
-            return;
-        }
-
-        // Устанавливаем точку назначения для игрока
-        var playerQuery = entityManager.CreateEntityQuery(typeof(PlayerTag));
-        if (!playerQuery.IsEmpty)
-        {
-            var playerEntity = playerQuery.GetSingletonEntity();
-            var travelState = entityManager.GetComponentData<TravelState>(playerEntity);
-
-            travelState.Destination = routePlan.EndPosition;
-            travelState.DestinationReached = false;
-            travelState.IsTraveling = true;
-            travelState.StartPosition = GetPlayerPosition();
-
-            entityManager.SetComponentData(playerEntity, travelState);
-
-            routePanel.SetActive(false);
-        }
-
-        // Очищаем план маршрута
-        entityManager.DestroyEntity(_routePlanEntity);
-        _routePlanEntity = Entity.Null;
-    }
-
-    // ИЗМЕНИТЬ НА PUBLIC!
-    public void CancelRoute()
-    {
-        if (_routePlanEntity != Entity.Null && World.DefaultGameObjectInjectionWorld.IsCreated)
-        {
-            var entityManager = World.DefaultGameObjectInjectionWorld.EntityManager;
-            if (entityManager.Exists(_routePlanEntity))
+            _ecsWorld = World.DefaultGameObjectInjectionWorld;
+            if (_ecsWorld != null)
             {
-                entityManager.DestroyEntity(_routePlanEntity);
+                _entityManager = _ecsWorld.EntityManager;
             }
-            _routePlanEntity = Entity.Null;
+
+            SetupUIEvents();
+            PopulateCitiesDropdown();
         }
 
-        routePanel.SetActive(false);
-    }
-
-    private void UpdateRouteWarnings()
-    {
-        if (_routePlanEntity == Entity.Null || !World.DefaultGameObjectInjectionWorld.IsCreated) return;
-
-        var entityManager = World.DefaultGameObjectInjectionWorld.EntityManager;
-
-        if (!entityManager.Exists(_routePlanEntity)) return;
-
-        var routePlan = entityManager.GetComponentData<RoutePlan>(_routePlanEntity);
-
-        if (routePlan.IsValid)
+        private void SetupUIEvents()
         {
-            routeInfoText.text = $"✅ Маршрут готов!\nДистанция: {routePlan.TotalDistance:F1}";
-            timeRequiredText.text = $"Время: {routePlan.EstimatedTime:F1} сек";
-            foodRequiredText.text = $"Провиант: {routePlan.FoodRequired:F1}";
-            riskAssessmentText.text = $"Риск: {routePlan.RiskLevel:P0}";
+            if (openPlannerButton != null)
+                openPlannerButton.onClick.AddListener(OpenPlanner);
 
-            var playerFood = GetPlayerFood();
-            insufficientFoodWarning.SetActive(playerFood < routePlan.FoodRequired);
-            highRiskWarning.SetActive(routePlan.RiskLevel > 0.7f);
+            if (closePlannerButton != null)
+                closePlannerButton.onClick.AddListener(ClosePlanner);
 
-            startTravelButton.interactable = playerFood >= routePlan.FoodRequired;
+            if (confirmRouteButton != null)
+                confirmRouteButton.onClick.AddListener(ConfirmRoute);
+
+            if (cancelRouteButton != null)
+                cancelRouteButton.onClick.AddListener(CancelRoute);
+
+            if (setStartPointButton != null)
+                setStartPointButton.onClick.AddListener(SetStartFromCurrent);
+
+            if (setEndPointButton != null)
+                setEndPointButton.onClick.AddListener(SetEndFromSelection);
+
+            if (clearRouteButton != null)
+                clearRouteButton.onClick.AddListener(ClearRoute);
+
+            if (citiesDropdown != null)
+                citiesDropdown.onValueChanged.AddListener(OnCitySelected);
         }
-    }
 
-    private void ClearRouteInfo()
-    {
-        routeInfoText.text = "Введите координаты назначения (X Y)";
-        timeRequiredText.text = "";
-        foodRequiredText.text = "";
-        riskAssessmentText.text = "";
-        insufficientFoodWarning.SetActive(false);
-        highRiskWarning.SetActive(false);
-        startTravelButton.interactable = false;
-    }
-
-    private float3 GetPlayerPosition()
-    {
-        if (!World.DefaultGameObjectInjectionWorld.IsCreated) return float3.zero;
-
-        var entityManager = World.DefaultGameObjectInjectionWorld.EntityManager;
-        var playerQuery = entityManager.CreateEntityQuery(typeof(PlayerTag), typeof(MapPosition));
-
-        if (!playerQuery.IsEmpty)
+        private void PopulateCitiesDropdown()
         {
-            var position = playerQuery.GetSingleton<MapPosition>();
-            return position.WorldPosition;
+            if (citiesDropdown == null) return;
+
+            citiesDropdown.ClearOptions();
+            var cityNames = new List<string> { "Выберите город..." };
+
+            var cityQuery = _entityManager.CreateEntityQuery(typeof(City));
+            var cities = cityQuery.ToEntityArray(Unity.Collections.Allocator.Temp);
+
+            foreach (var cityEntity in cities)
+            {
+                var city = _entityManager.GetComponentData<City>(cityEntity);
+                cityNames.Add(city.Name.ToString());
+            }
+
+            citiesDropdown.AddOptions(cityNames);
+            cities.Dispose();
         }
 
-        return float3.zero;
+
+        public void OpenPlanner()
+        {
+            if (routePlannerPanel != null)
+                routePlannerPanel.SetActive(true);
+
+            _isPlanningMode = true;
+            UpdateRouteInfo();
+            Debug.Log("🗺️ RoutePlannerUIManager: Планировщик маршрутов открыт");
+        }
+
+
+        public void ClosePlanner()
+        {
+            if (routePlannerPanel != null)
+                routePlannerPanel.SetActive(false);
+
+            _isPlanningMode = false;
+            ClearRoute();
+            Debug.Log("🗺️ RoutePlannerUIManager: Планировщик маршрутов закрыт");
+        }
+
+        private void SetStartFromCurrent()
+        {
+            var playerQuery = _entityManager.CreateEntityQuery(typeof(PlayerTag), typeof(MapPosition));
+            if (playerQuery.IsEmpty) return;
+
+            var playerEntity = playerQuery.GetSingletonEntity();
+            var position = _entityManager.GetComponentData<MapPosition>(playerEntity);
+
+            _startPosition = position.WorldPosition;
+            UpdateRouteInfo();
+
+            Debug.Log($"📍 RoutePlanner: Начальная точка установлена на текущую позицию");
+
+            playerQuery.Dispose();
+        }
+
+        private void SetEndFromSelection()
+        {
+            if (citiesDropdown == null || citiesDropdown.value == 0) return;
+
+            var cityQuery = _entityManager.CreateEntityQuery(typeof(City));
+            var cities = cityQuery.ToEntityArray(Unity.Collections.Allocator.Temp);
+
+            if (citiesDropdown.value - 1 < cities.Length)
+            {
+                var cityEntity = cities[citiesDropdown.value - 1];
+                var city = _entityManager.GetComponentData<City>(cityEntity);
+
+                _endPosition = city.WorldPosition;
+                UpdateRouteInfo();
+
+                Debug.Log($"🎯 RoutePlanner: Конечная точка установлена на {city.Name}");
+            }
+
+            cities.Dispose();
+        }
+
+        private void OnCitySelected(int index)
+        {
+            // Город выбран в dropdown, можно установить как конечную точку
+            if (index > 0)
+            {
+                SetEndFromSelection();
+            }
+        }
+
+        private void ClearRoute()
+        {
+            _startPosition = float3.zero;
+            _endPosition = float3.zero;
+            _currentRoutePlan = new RoutePlan { IsValid = false };
+
+            UpdateRouteInfo();
+            Debug.Log("🗺️ RoutePlanner: Маршрут очищен");
+        }
+
+        private void UpdateRouteInfo()
+        {
+            // Обновляем информацию о начальной точке
+            if (startPointText != null)
+            {
+                startPointText.text = _startPosition.Equals(float3.zero) ?
+                    "Не установлена" : $"({_startPosition.x:F0}, {_startPosition.z:F0})";
+            }
+
+            // Обновляем информацию о конечной точке
+            if (endPointText != null)
+            {
+                endPointText.text = _endPosition.Equals(float3.zero) ?
+                    "Не установлена" : $"({_endPosition.x:F0}, {_endPosition.z:F0})";
+            }
+
+            // Рассчитываем маршрут если обе точки установлены
+            if (!_startPosition.Equals(float3.zero) && !_endPosition.Equals(float3.zero))
+            {
+                CalculateRoute();
+                UpdateRouteDetails();
+                UpdateWarnings();
+            }
+            else
+            {
+                ClearRouteDetails();
+            }
+
+            // Обновляем состояние кнопок
+            UpdateButtonsState();
+        }
+
+        private void CalculateRoute()
+        {
+            // Рассчитываем базовые параметры маршрута
+            var distance = math.distance(_startPosition, _endPosition);
+            var playerQuery = _entityManager.CreateEntityQuery(typeof(PlayerTag), typeof(PlayerConvoy));
+
+            float speed = 5f; // Базовая скорость
+            if (!playerQuery.IsEmpty)
+            {
+                var playerEntity = playerQuery.GetSingletonEntity();
+                var convoy = _entityManager.GetComponentData<PlayerConvoy>(playerEntity);
+                speed = convoy.BaseSpeed;
+            }
+
+            var estimatedTime = distance / speed;
+            var riskLevel = CalculateRiskLevel(_startPosition, _endPosition);
+            var foodRequired = CalculateFoodRequired(estimatedTime);
+
+            _currentRoutePlan = new RoutePlan
+            {
+                StartPosition = _startPosition,
+                EndPosition = _endPosition,
+                TotalDistance = distance,
+                EstimatedTime = estimatedTime,
+                FoodRequired = foodRequired,
+                RiskLevel = riskLevel,
+                IsValid = true
+            };
+
+            playerQuery.Dispose();
+        }
+
+        private float CalculateRiskLevel(float3 start, float3 end)
+        {
+            // Упрощенный расчет уровня риска
+            // В реальной реализации здесь будет сложная логика анализа местности
+            var distance = math.distance(start, end);
+            var baseRisk = math.min(distance / 100f, 0.8f); // Риск растет с дистанцией
+
+            // Добавляем случайный фактор
+            var random = new Unity.Mathematics.Random((uint)(start.x + start.z + end.x + end.z));
+            var randomRisk = random.NextFloat(0.1f, 0.3f);
+
+            return math.min(baseRisk + randomRisk, 1.0f);
+        }
+
+        private float CalculateFoodRequired(float travelTime)
+        {
+            var playerQuery = _entityManager.CreateEntityQuery(typeof(PlayerTag), typeof(ConvoyResources));
+            if (playerQuery.IsEmpty) return 0f;
+
+            var playerEntity = playerQuery.GetSingletonEntity();
+            var resources = _entityManager.GetComponentData<ConvoyResources>(playerEntity);
+
+            // Еда потребляется в день, время в часах - конвертируем
+            var days = travelTime / 24f;
+            var foodRequired = resources.FoodConsumptionRate * resources.Guards * days;
+
+            playerQuery.Dispose();
+            return foodRequired;
+        }
+
+        private void UpdateRouteDetails()
+        {
+            if (distanceText != null)
+                distanceText.text = $"{_currentRoutePlan.TotalDistance:F1} км";
+
+            if (timeText != null)
+            {
+                var hours = _currentRoutePlan.EstimatedTime;
+                var days = hours / 24f;
+                timeText.text = $"{days:F1} дней";
+            }
+
+            if (foodRequiredText != null)
+                foodRequiredText.text = $"{_currentRoutePlan.FoodRequired:F0} ед.";
+
+            if (riskLevelText != null)
+            {
+                riskLevelText.text = $"{_currentRoutePlan.RiskLevel:P0}";
+                riskLevelText.color = _currentRoutePlan.RiskLevel < 0.3f ? Color.green :
+                                    _currentRoutePlan.RiskLevel < 0.6f ? Color.yellow : Color.red;
+            }
+
+            if (riskSlider != null)
+            {
+                riskSlider.value = _currentRoutePlan.RiskLevel;
+
+                // Изменяем цвет слайдера в зависимости от уровня риска
+                var fillImage = riskSlider.fillRect.GetComponent<Image>();
+                if (fillImage != null)
+                {
+                    fillImage.color = _currentRoutePlan.RiskLevel < 0.3f ? Color.green :
+                                    _currentRoutePlan.RiskLevel < 0.6f ? Color.yellow : Color.red;
+                }
+            }
+        }
+
+        private void ClearRouteDetails()
+        {
+            if (distanceText != null) distanceText.text = "-";
+            if (timeText != null) timeText.text = "-";
+            if (foodRequiredText != null) foodRequiredText.text = "-";
+            if (riskLevelText != null) riskLevelText.text = "-";
+            if (riskSlider != null) riskSlider.value = 0f;
+        }
+
+        private void UpdateWarnings()
+        {
+            if (warningsPanel == null || warningsText == null) return;
+
+            var warnings = new List<string>();
+            var playerQuery = _entityManager.CreateEntityQuery(typeof(PlayerTag), typeof(ConvoyResources));
+
+            if (!playerQuery.IsEmpty)
+            {
+                var playerEntity = playerQuery.GetSingletonEntity();
+                var resources = _entityManager.GetComponentData<ConvoyResources>(playerEntity);
+
+                // Проверяем достаточно ли еды
+                if (resources.Food < _currentRoutePlan.FoodRequired)
+                {
+                    warnings.Add("⚠️ Недостаточно провианта для маршрута");
+                }
+
+                // Проверяем уровень риска
+                if (_currentRoutePlan.RiskLevel > 0.7f)
+                {
+                    warnings.Add("⚡ Высокий уровень риска на маршруте");
+                }
+
+                // Проверяем мораль
+                if (resources.Morale < 0.3f)
+                {
+                    warnings.Add("😔 Низкая мораль отряда");
+                }
+            }
+
+            playerQuery.Dispose();
+
+            // Показываем/скрываем панель предупреждений
+            bool hasWarnings = warnings.Count > 0;
+            warningsPanel.SetActive(hasWarnings);
+
+            if (hasWarnings)
+            {
+                warningsText.text = string.Join("\n", warnings);
+            }
+        }
+
+        private void UpdateButtonsState()
+        {
+            bool hasValidRoute = _currentRoutePlan.IsValid;
+
+            if (confirmRouteButton != null)
+                confirmRouteButton.interactable = hasValidRoute;
+
+            if (cancelRouteButton != null)
+                cancelRouteButton.interactable = hasValidRoute;
+        }
+
+        private void ConfirmRoute()
+        {
+            if (!_currentRoutePlan.IsValid) return;
+
+            // Создаем команду для системы путешествий
+            var routeEntity = _entityManager.CreateEntity();
+            _entityManager.AddComponentData(routeEntity, new TravelCommand
+            {
+                StartPosition = _currentRoutePlan.StartPosition,
+                EndPosition = _currentRoutePlan.EndPosition,
+                RoutePlan = _currentRoutePlan
+            });
+
+            Debug.Log($"✅ RoutePlanner: Маршрут подтвержден. Дистанция: {_currentRoutePlan.TotalDistance:F1} км");
+
+            ClosePlanner();
+        }
+
+        private void CancelRoute()
+        {
+            ClearRoute();
+            Debug.Log("❌ RoutePlanner: Планирование маршрута отменено");
+        }
+
+        public bool IsPlannerOpen()
+        {
+            return routePlannerPanel != null && routePlannerPanel.activeInHierarchy;
+        }
     }
 
-    private int GetPlayerFood()
+    public struct TravelCommand : IComponentData
     {
-        if (!World.DefaultGameObjectInjectionWorld.IsCreated) return 0;
-
-        var entityManager = World.DefaultGameObjectInjectionWorld.EntityManager;
-        var playerQuery = entityManager.CreateEntityQuery(typeof(PlayerTag), typeof(ConvoyResources));
-
-        if (!playerQuery.IsEmpty)
-        {
-            var resources = playerQuery.GetSingleton<ConvoyResources>();
-            return resources.Food;
-        }
-
-        return 0;
+        public float3 StartPosition;
+        public float3 EndPosition;
+        public RoutePlan RoutePlan;
     }
 }
