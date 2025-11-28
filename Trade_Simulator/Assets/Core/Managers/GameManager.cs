@@ -1,4 +1,5 @@
-﻿using Unity.Entities;
+﻿using Unity.Collections;
+using Unity.Entities;
 using UnityEngine;
 namespace Core.Managers
 {
@@ -37,6 +38,7 @@ namespace Core.Managers
         private float _autoSaveTimer;
         private EntityManager _entityManager;
         private World _ecsWorld;
+        private bool _initializationAttempted = false;
 
         private void Awake()
         {
@@ -47,6 +49,11 @@ namespace Core.Managers
             if (_ecsWorld != null)
             {
                 _entityManager = _ecsWorld.EntityManager;
+                Debug.Log($"🌍 GameManager: ECS World найден - {_ecsWorld.Name}");
+            }
+            else
+            {
+                Debug.LogWarning("⚠️ GameManager: ECS World не найден, будет повторная попытка");
             }
 
             // Находим зависимости
@@ -58,16 +65,115 @@ namespace Core.Managers
 
         private void Start()
         {
-            // Ждем инициализации ECS
-            if (_ecsWorld != null && AreECSSystemsReady())
+            // Даем ECS системам время на инициализацию
+            Invoke(nameof(CheckECSSystems), 0.5f);
+        }
+
+        private void CheckECSSystems()
+        {
+            if (AreECSSystemsReady())
             {
                 ChangeGameState(GameState.MainMenu);
+                Debug.Log("✅ GameManager: ECS системы готовы, инициализация завершена");
             }
             else
             {
-                Debug.LogWarning("⚠️ GameManager: ECS системы еще не готовы, отложенная инициализация");
-                Invoke(nameof(DelayedInitialization), 1f);
+                Debug.LogWarning("⚠️ GameManager: ECS системы еще не готовы, повторная проверка через 1 секунду");
+
+                if (!_initializationAttempted)
+                {
+                    _initializationAttempted = true;
+                    Invoke(nameof(FinalInitializationAttempt), 1f);
+                }
+                else
+                {
+                    // Если вторая попытка тоже неудачна, переходим в состояние ошибки
+                    Debug.LogError("❌ GameManager: ECS системы не готовы после нескольких попыток");
+                    ChangeGameState(GameState.Error);
+                    ShowECSNotReadyError();
+                }
             }
+        }
+
+        private void FinalInitializationAttempt()
+        {
+            if (AreECSSystemsReady())
+            {
+                ChangeGameState(GameState.MainMenu);
+                Debug.Log("✅ GameManager: ECS системы готовы после повторной проверки");
+            }
+            else
+            {
+                Debug.LogError("❌ GameManager: ECS системы не готовы после задержки");
+                ChangeGameState(GameState.Error);
+                ShowECSNotReadyError();
+            }
+        }
+
+        private bool AreECSSystemsReady()
+        {
+            if (_ecsWorld == null)
+            {
+                // Пытаемся снова найти ECS World
+                _ecsWorld = World.DefaultGameObjectInjectionWorld;
+                if (_ecsWorld == null || !_ecsWorld.IsCreated)
+                {
+                    Debug.LogWarning("⚠️ ECS World все еще не найден или не создан");
+                    return false;
+                }
+                _entityManager = _ecsWorld.EntityManager;
+            }
+
+            if (_entityManager == null)
+            {
+                Debug.LogWarning("⚠️ EntityManager не инициализирован");
+                return false;
+            }
+
+            try
+            {
+                // Проверяем наличие ключевых систем через SystemHandle
+                var simulationSystemGroup = _ecsWorld.GetExistingSystemManaged<SimulationSystemGroup>();
+                if (simulationSystemGroup == null)
+                {
+                    Debug.LogWarning("⚠️ SimulationSystemGroup не найдена");
+                    return false;
+                }
+
+                // Проверяем наличие компонента GameConfig (если он должен быть)
+                var configQuery = _entityManager.CreateEntityQuery(typeof(GameConfig));
+                var hasConfig = !configQuery.IsEmpty;
+                configQuery.Dispose();
+
+                Debug.Log($"🔍 GameManager: Проверка ECS - World: {_ecsWorld.Name}, Systems: {_ecsWorld.Systems.Count}, HasConfig: {hasConfig}");
+
+                // Если GameConfig обязателен, проверяем его наличие
+                // Если нет - просто проверяем что мир и системы работают
+                return _ecsWorld.IsCreated && _ecsWorld.Systems.Count > 0;
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogError($"❌ Ошибка проверки ECS систем: {e.Message}");
+                return false;
+            }
+        }
+
+        private void ShowECSNotReadyError()
+        {
+            // Можно показать UI сообщение об ошибке
+            var errorMessage = "ECS системы не инициализированы. Пожалуйста, перезапустите игру.";
+            Debug.LogError($"❌ {errorMessage}");
+            OnGameEvent?.Invoke(errorMessage);
+
+            // Создаем объект с сообщением об ошибке (опционально)
+            CreateErrorMessageObject(errorMessage);
+        }
+
+        private void CreateErrorMessageObject(string message)
+        {
+            var errorObject = new GameObject("ECS_Error_Message");
+            var textMesh = errorObject.AddComponent<UnityEngine.UI.Text>();
+            // Настройте UI компонент по необходимости
         }
 
         private void Update()
@@ -119,34 +225,17 @@ namespace Core.Managers
             }
         }
 
-        private void DelayedInitialization()
-        {
-            if (AreECSSystemsReady())
-            {
-                ChangeGameState(GameState.MainMenu);
-                Debug.Log("✅ GameManager: Отложенная инициализация завершена");
-            }
-            else
-            {
-                Debug.LogError("❌ GameManager: ECS системы не готовы после задержки");
-                ChangeGameState(GameState.Error);
-            }
-        }
-
-        private bool AreECSSystemsReady()
-        {
-            if (_ecsWorld == null) return false;
-
-            // Проверяем наличие ключевых систем
-            var configQuery = _entityManager.CreateEntityQuery(typeof(GameConfig));
-            var hasConfig = !configQuery.IsEmpty;
-            configQuery.Dispose();
-
-            return hasConfig; // Конфиг должен быть всегда
-        }
         public void StartNewGame()
         {
             Debug.Log("🎯 GameManager: Запуск новой игры...");
+
+            // Дополнительная проверка что ECS готов
+            if (!AreECSSystemsReady())
+            {
+                Debug.LogError("❌ Нельзя начать игру - ECS системы не готовы");
+                OnGameEvent?.Invoke("Ошибка: системы игры не готовы");
+                return;
+            }
 
             ChangeGameState(GameState.Playing);
 
@@ -176,7 +265,6 @@ namespace Core.Managers
             }
         }
 
-
         public void SaveGame(string saveName = "quicksave")
         {
             if (currentGameState != GameState.Playing)
@@ -198,7 +286,6 @@ namespace Core.Managers
             }
         }
 
-
         public void SetPause(bool paused)
         {
             if (isGamePaused == paused) return;
@@ -212,12 +299,10 @@ namespace Core.Managers
             Debug.Log($"⏸️ GameManager: Пауза - {paused}");
         }
 
-
         public void TogglePause()
         {
             SetPause(!isGamePaused);
         }
-
 
         public void ReturnToMainMenu()
         {
@@ -230,12 +315,10 @@ namespace Core.Managers
             ClearGameData();
         }
 
-
         public void LoadScene(string sceneName)
         {
             UnityEngine.SceneManagement.SceneManager.LoadScene(sceneName);
         }
-
 
         public void QuitGame()
         {
@@ -288,14 +371,25 @@ namespace Core.Managers
 
         private void ResetGameData()
         {
-            // Логика сброса игровых данных будет в системе ECS
             Debug.Log("🔄 GameManager: Сброс игровых данных");
 
-            // Создаем команду для системы сброса
-            if (_entityManager != null)
+            // Проверяем через World вместо EntityManager
+            if (_ecsWorld != null && _ecsWorld.IsCreated && _entityManager != null)
             {
-                var resetEntity = _entityManager.CreateEntity();
-                _entityManager.AddComponent<ResetGameCommand>(resetEntity);
+                try
+                {
+                    var resetEntity = _entityManager.CreateEntity();
+                    _entityManager.AddComponent<ResetGameCommand>(resetEntity);
+                    Debug.Log("✅ Команда сброса игры создана");
+                }
+                catch (System.Exception e)
+                {
+                    Debug.LogError($"❌ Ошибка создания команды сброса: {e.Message}");
+                }
+            }
+            else
+            {
+                Debug.LogWarning("⚠️ EntityManager не доступен для создания команды сброса");
             }
         }
 
@@ -335,19 +429,26 @@ namespace Core.Managers
         {
             if (_entityManager == null) return;
 
-            // Проверяем условия завершения игры
-            var playerQuery = _entityManager.CreateEntityQuery(typeof(PlayerTag), typeof(ConvoyResources));
-            if (playerQuery.IsEmpty) return;
-
-            var resources = playerQuery.GetSingleton<ConvoyResources>();
-
-            // Условие проигрыша: нет золота, еды и охраны
-            if (resources.Gold <= 0 && resources.Food <= 0 && resources.Guards <= 0)
+            try
             {
-                ChangeGameState(GameState.GameOver);
-            }
+                // Проверяем условия завершения игры
+                var playerQuery = _entityManager.CreateEntityQuery(typeof(PlayerTag), typeof(ConvoyResources));
+                if (playerQuery.IsEmpty) return;
 
-            playerQuery.Dispose();
+                var resources = playerQuery.GetSingleton<ConvoyResources>();
+
+                // Условие проигрыша: нет золота, еды и охраны
+                if (resources.Gold <= 0 && resources.Food <= 0 && resources.Guards <= 0)
+                {
+                    ChangeGameState(GameState.GameOver);
+                }
+
+                playerQuery.Dispose();
+            }
+            catch (System.Exception e)
+            {
+                Debug.LogWarning($"⚠️ Ошибка проверки условий игры: {e.Message}");
+            }
         }
 
         private void TriggerAutoSave()
@@ -377,22 +478,25 @@ namespace Core.Managers
             }
         }
 
-
         public string GetGameInfo()
         {
             var info = $"🎮 Game State: {currentGameState}\n";
             info += $"⏸️ Paused: {isGamePaused}\n";
             info += $"💾 AutoSave: {autoSaveEnabled} ({_autoSaveTimer:F0}/{autoSaveInterval}s)\n";
 
-            if (_ecsWorld != null)
+            if (_ecsWorld != null && _ecsWorld.IsCreated)
             {
                 info += $"🌍 ECS World: {_ecsWorld.Name}\n";
+                info += $"⚙️ ECS Systems: {_ecsWorld.Systems.Count}\n";
+            }
+            else
+            {
+                info += "🌍 ECS World: Not Available\n";
             }
 
             return info;
         }
     }
-
 
     public enum GameState
     {
@@ -404,7 +508,6 @@ namespace Core.Managers
         GameOver,       // Конец игры
         Error           // Ошибка
     }
-
 
     public struct ResetGameCommand : IComponentData { }
 }

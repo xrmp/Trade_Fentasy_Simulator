@@ -14,20 +14,29 @@ public partial struct InventorySystem : ISystem
         var deltaTime = SystemAPI.Time.DeltaTime;
         _decayTimer += deltaTime;
 
-        var ecb = new EntityCommandBuffer(Allocator.Temp);
+        // Получаем lookup для доступа к компонентам
+        var goodDataLookup = SystemAPI.GetComponentLookup<GoodData>();
 
-        // Проверка перегрузки
+        // Сначала выполняем все джобы
         CheckOverload(ref state);
 
         // Порча товаров каждые 30 секунд
         if (_decayTimer >= 30f)
         {
-            ProcessGoodsDecay(ref state, ref ecb);
+            ProcessGoodsDecay(ref state, goodDataLookup);
             _decayTimer = 0f;
         }
 
         // Автоматическая сортировка
-        SortInventory(ref state, ref ecb);
+        SortInventory(ref state, goodDataLookup);
+
+        // ЖДЕМ завершения всех джобов перед созданием ECB
+        state.Dependency.Complete();
+
+        // Теперь безопасно работаем с EntityManager
+        var ecb = new EntityCommandBuffer(Allocator.Temp);
+
+        // Здесь можно добавить операции через ECB если нужно
 
         ecb.Playback(state.EntityManager);
         ecb.Dispose();
@@ -50,7 +59,7 @@ public partial struct InventorySystem : ISystem
         }
     }
 
-    private void ProcessGoodsDecay(ref SystemState state, ref EntityCommandBuffer ecb)
+    private void ProcessGoodsDecay(ref SystemState state, ComponentLookup<GoodData> goodDataLookup)
     {
         var ecbSingleton = SystemAPI.GetSingleton<BeginSimulationEntityCommandBufferSystem.Singleton>();
         var parallelEcb = ecbSingleton.CreateCommandBuffer(state.WorldUnmanaged).AsParallelWriter();
@@ -58,40 +67,28 @@ public partial struct InventorySystem : ISystem
         var decayJob = new GoodsDecayJob
         {
             ECB = parallelEcb,
-            EntityManager = state.EntityManager,
+            GoodDataLookup = goodDataLookup,
             RandomSeed = (uint)SystemAPI.Time.ElapsedTime + 1
         };
 
         state.Dependency = decayJob.Schedule(state.Dependency);
     }
 
-    private void SortInventory(ref SystemState state, ref EntityCommandBuffer ecb)
+    private void SortInventory(ref SystemState state, ComponentLookup<GoodData> goodDataLookup)
     {
         var sortJob = new SortInventoryJob
         {
-            EntityManager = state.EntityManager
+            GoodDataLookup = goodDataLookup
         };
 
         state.Dependency = sortJob.Schedule(state.Dependency);
-    }
-
-    private float GetDecayChance(GoodCategory category)
-    {
-        return category switch
-        {
-            GoodCategory.Food => 0.3f,
-            GoodCategory.RawMaterials => 0.1f,
-            GoodCategory.Crafts => 0.05f,
-            GoodCategory.Luxury => 0.02f,
-            _ => 0.1f
-        };
     }
 
     [BurstCompile]
     private partial struct GoodsDecayJob : IJobEntity
     {
         public EntityCommandBuffer.ParallelWriter ECB;
-        public EntityManager EntityManager;
+        [ReadOnly] public ComponentLookup<GoodData> GoodDataLookup;
         public uint RandomSeed;
 
         public void Execute([EntityIndexInQuery] int index, Entity entity, DynamicBuffer<InventoryBuffer> inventory)
@@ -101,9 +98,11 @@ public partial struct InventorySystem : ISystem
             for (int i = inventory.Length - 1; i >= 0; i--)
             {
                 var item = inventory[i];
-                if (EntityManager.HasComponent<GoodData>(item.GoodEntity))
+
+                // Получаем GoodData через Lookup вместо EntityManager
+                if (GoodDataLookup.HasComponent(item.GoodEntity))
                 {
-                    var goodData = EntityManager.GetComponentData<GoodData>(item.GoodEntity);
+                    var goodData = GoodDataLookup[item.GoodEntity];
                     var decayChance = GetDecayChance(goodData.Category);
 
                     if (random.NextFloat() < decayChance)
@@ -113,6 +112,7 @@ public partial struct InventorySystem : ISystem
 
                         if (item.Quantity <= 0)
                         {
+                            // Удаляем элемент из буфера
                             inventory.RemoveAt(i);
                         }
                         else
@@ -140,46 +140,43 @@ public partial struct InventorySystem : ISystem
     [BurstCompile]
     private partial struct SortInventoryJob : IJobEntity
     {
-        public EntityManager EntityManager;
+        [ReadOnly] public ComponentLookup<GoodData> GoodDataLookup;
 
         public void Execute(DynamicBuffer<InventoryBuffer> inventory)
         {
+            // Временный список для сортировки
             var items = new NativeList<InventoryItem>(Allocator.Temp);
 
             // Собираем товары для сортировки
-            foreach (var item in inventory)
+            for (int i = 0; i < inventory.Length; i++)
             {
-                if (item.Quantity > 0 && EntityManager.HasComponent<GoodData>(item.GoodEntity))
+                var item = inventory[i];
+                if (item.Quantity > 0)
                 {
-                    var goodData = EntityManager.GetComponentData<GoodData>(item.GoodEntity);
-                    var efficiency = (float)goodData.BaseValue / goodData.WeightPerUnit;
-
-                    items.Add(new InventoryItem
+                    // Используем Lookup для доступа к данным
+                    if (GoodDataLookup.HasComponent(item.GoodEntity))
                     {
-                        GoodEntity = item.GoodEntity,
-                        Quantity = item.Quantity,
-                        Efficiency = efficiency
-                    });
+                        var goodData = GoodDataLookup[item.GoodEntity];
+                        var efficiency = (float)goodData.BaseValue / goodData.WeightPerUnit;
+
+                        items.Add(new InventoryItem
+                        {
+                            GoodEntity = item.GoodEntity,
+                            Quantity = item.Quantity,
+                            Efficiency = efficiency
+                        });
+                    }
                 }
             }
 
-            // Сортировка пузырьком по эффективности
+            // Сортировка по эффективности (по убыванию)
             if (items.Length > 1)
             {
-                for (int i = 0; i < items.Length - 1; i++)
-                {
-                    for (int j = i + 1; j < items.Length; j++)
-                    {
-                        if (items[i].Efficiency < items[j].Efficiency)
-                        {
-                            var temp = items[i];
-                            items[i] = items[j];
-                            items[j] = temp;
-                        }
-                    }
-                }
+                // Используем более эффективную сортировку
+                SortItems(items);
 
-                // Перезаписываем инвентарь
+                // Перезаписываем инвентарь в отсортированном порядке
+                // Сначала очищаем, потом добавляем отсортированные
                 inventory.Clear();
                 foreach (var item in items)
                 {
@@ -192,6 +189,29 @@ public partial struct InventorySystem : ISystem
             }
 
             items.Dispose();
+        }
+
+        private void SortItems(NativeList<InventoryItem> items)
+        {
+            // Сортировка выбором (более эффективная чем пузырьковая)
+            for (int i = 0; i < items.Length - 1; i++)
+            {
+                int maxIndex = i;
+                for (int j = i + 1; j < items.Length; j++)
+                {
+                    if (items[j].Efficiency > items[maxIndex].Efficiency)
+                    {
+                        maxIndex = j;
+                    }
+                }
+
+                if (maxIndex != i)
+                {
+                    var temp = items[i];
+                    items[i] = items[maxIndex];
+                    items[maxIndex] = temp;
+                }
+            }
         }
     }
 
