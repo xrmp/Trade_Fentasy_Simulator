@@ -386,7 +386,6 @@ namespace UI.Managers
             };
         }
 
-
         public void SetUIVisible(bool visible)
         {
             gameObject.SetActive(visible);
@@ -398,12 +397,65 @@ namespace UI.Managers
             Debug.Log("🔄 ConvoyUIManager: Принудительное обновление UI");
         }
 
+        // Старый метод для обратной совместимости (4 параметра)
         public void UpdateTestData(int gold, int food, int capacity, int usedCapacity)
         {
             testGold = gold;
             testFood = food;
             testCapacity = capacity;
             testUsedCapacity = usedCapacity;
+            RefreshUI();
+        }
+
+        // Новый метод с полным набором параметров (7 параметров)
+        public void UpdateTestData(int gold, int food, int guards, float morale, int capacity, int usedCapacity, float speed)
+        {
+            testGold = gold;
+            testFood = food;
+            testGuards = guards;
+            testMorale = morale;
+            testCapacity = capacity;
+            testUsedCapacity = usedCapacity;
+            testSpeed = speed;
+            RefreshUI();
+        }
+
+        // Обновление только позиции и местности
+        public void UpdateTestPosition(string position, string terrain)
+        {
+            testPosition = position;
+            testTerrain = terrain;
+            RefreshUI();
+        }
+
+        // Обновление только ресурсов
+        public void UpdateTestResources(int gold, int food, int guards)
+        {
+            testGold = gold;
+            testFood = food;
+            testGuards = guards;
+            RefreshUI();
+        }
+
+        // Обновление только грузоподъемности
+        public void UpdateTestCapacity(int capacity, int usedCapacity)
+        {
+            testCapacity = capacity;
+            testUsedCapacity = usedCapacity;
+            RefreshUI();
+        }
+
+        // Обновление только морали
+        public void UpdateTestMorale(float morale)
+        {
+            testMorale = morale;
+            RefreshUI();
+        }
+
+        // Обновление только скорости
+        public void UpdateTestSpeed(float speed)
+        {
+            testSpeed = speed;
             RefreshUI();
         }
     }
